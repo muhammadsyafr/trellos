@@ -1,0 +1,27 @@
+{
+  "name": "trellos",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build",
+    "preview": "vite preview",
+    "start": "node build"
+  },
+  "devDependencies": {
+    "@sveltejs/adapter-node": "^5.2.12",
+    "@sveltejs/kit": "^2.20.0",
+    "@sveltejs/vite-plugin-svelte": "^5.0.3",
+    "svelte": "^5.20.0",
+    "vite": "^6.2.0"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.2.0",
+    "svelte-dnd-action": "^0.9.61"
+  },
+  "allowScripts": {
+    "better-sqlite3@12.11.1": true,
+    "esbuild@0.25.12": true
+  }
+}
