@@ -10,3 +10,8 @@ node_modules
 *.db-wal
 *.db-shm
 data/
+
+# wrangler files
+.wrangler
+.dev.vars*
+!.dev.vars.example
