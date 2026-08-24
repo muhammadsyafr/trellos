@@ -14,5 +14,12 @@
   "preview_urls": true,
   "observability": {
     "enabled": true
-  }
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "trellos-db",
+      "database_id": "8d0d56b8-34ca-4e54-bcbb-e90149b223a2"
+    }
+  ]
 }
