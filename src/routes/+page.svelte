@@ -2,9 +2,80 @@
   import { dndzone } from 'svelte-dnd-action';
   import { flip } from 'svelte/animate';
   import { onMount } from 'svelte';
+  import { goto } from '$app/navigation';
 
   let { data } = $props();
-  let columns = $state(data.board);
+  let boards = $state(data.boards);
+  let boardId = $state(data.boardId);
+  let columns = $state(data.columns);
+  // guards the deep-link auto-open below from re-firing: openDetail mutates a card nested
+  // inside `columns`, which this same effect reads — without the guard that mutation would
+  // re-trigger the effect and loop forever. Plain (non-reactive) so it just remembers across reruns.
+  let openedCardId = null;
+  // data is replaced wholesale on each board-switch navigation — resync local mutable state
+  $effect(() => {
+    boards = data.boards;
+    boardId = data.boardId;
+    columns = data.columns;
+    if (data.openCardId && data.openCardId !== openedCardId) {
+      openedCardId = data.openCardId;
+      for (const col of columns) {
+        const card = col.cards.find((c) => c.id === data.openCardId);
+        if (card) { openDetail(col, card); break; }
+      }
+    }
+  });
+  const currentBoard = $derived(boards.find((b) => b.id === boardId));
+
+  let boardMenuOpen = $state(false);
+  let boardDraft = $state(null); // '' while the "+ New board" form is open, else null
+  let boardEditingId = $state(null); // id of the board row currently showing its rename input
+
+  function toggleBoardMenu() {
+    if (boardMenuOpen) closeBoardMenu();
+    else boardMenuOpen = true;
+  }
+  function closeBoardMenu() {
+    boardMenuOpen = false;
+    boardDraft = null;
+    boardEditingId = null;
+  }
+  function switchBoard(id) {
+    closeBoardMenu();
+    if (id === boardId) return;
+    goto(`/?board=${id}`, { keepFocus: true });
+  }
+  async function addBoard() {
+    const title = boardDraft.trim() || 'New Board';
+    const board = await post('/api/boards', { title });
+    boards.push(board);
+    boardDraft = null;
+    switchBoard(board.id);
+  }
+  function renameBoard(board, value) {
+    board.title = value.trim() || 'Untitled board';
+    patch(`/api/boards/${board.id}`, { title: board.title });
+  }
+  async function renameBoardKey(board, value) {
+    const clean = value.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (!clean || clean === board.key) return;
+    const res = await patch(`/api/boards/${board.id}`, { key: clean });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      alert(body.message || 'Could not update board key');
+      return;
+    }
+    board.key = clean;
+  }
+  async function deleteBoard(board) {
+    if (boards.length <= 1) return;
+    if (!confirm(`Delete board "${board.title}" and all its lists/cards?`)) return;
+    const wasCurrent = board.id === boardId;
+    const remaining = boards.filter((b) => b.id !== board.id);
+    boards = remaining;
+    await del(`/api/boards/${board.id}`);
+    if (wasCurrent) switchBoard(remaining[0].id);
+  }
 
   // card density: comfortable (default) | compact, persisted locally
   let compact = $state(false);
@@ -87,7 +158,7 @@
 
   // ---- columns ----
   async function addColumn() {
-    columns.push(await post('/api/columns', { title: 'New List' }));
+    columns.push(await post('/api/columns', { boardId, title: 'New List' }));
   }
   function renameColumn(col, value) {
     col.title = value.trim() || 'Untitled';
@@ -117,8 +188,21 @@
   }
 
   // ---- detail modal ----
-  function openDetail(col, card) { open = { colId: col.id, card }; tagDraft = ''; }
+  async function openDetail(col, card) {
+    open = { colId: col.id, card };
+    tagDraft = '';
+    const fresh = await fetch(`/api/cards/${card.id}`).then((r) => r.json());
+    card.updatedAt = fresh.updatedAt;
+    card.history = fresh.history;
+  }
   function closeDetail() { open = null; }
+
+  let copiedLink = $state(false);
+  async function copyCardLink() {
+    await navigator.clipboard.writeText(`${location.origin}/${open.card.code}`);
+    copiedLink = true;
+    setTimeout(() => (copiedLink = false), 1200);
+  }
 
   // field edits patch immediately and mutate the live state object
   function saveField(field, value) {
@@ -142,7 +226,7 @@
     card.tags = card.tags.filter((x) => x !== t);
     patch(`/api/cards/${card.id}`, { tags: card.tags });
   }
-  function changeStatus(targetColId) {
+  async function changeStatus(targetColId) {
     targetColId = Number(targetColId);
     if (targetColId === open.colId) return;
     const from = columns.find((c) => c.id === open.colId);
@@ -151,7 +235,9 @@
     from.cards = from.cards.filter((c) => c.id !== card.id);
     to.cards.push(card);
     open.colId = targetColId;
-    patch(`/api/cards/${card.id}`, { columnId: targetColId });
+    const updated = await patch(`/api/cards/${card.id}`, { columnId: targetColId }).then((r) => r.json());
+    card.updatedAt = updated.updatedAt;
+    card.history = updated.history;
   }
   function deleteFromModal() {
     const col = columns.find((c) => c.id === open.colId);
@@ -175,7 +261,74 @@
       </svg>
     </span>
     <h1>Trel<span>los</span></h1>
-    <span class="stat"><b>{columns.length}</b> lists<i></i><b>{totalCards}</b> cards</span>
+  </div>
+
+  <div class="board-switcher">
+    <button class="switcher-trigger" onclick={toggleBoardMenu}>
+      <span class="switcher-title">{currentBoard?.title ?? 'Select board'}</span>
+      <span class="stat"><b>{columns.length}</b> lists<i></i><b>{totalCards}</b> cards</span>
+      <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9" /></svg>
+    </button>
+
+    {#if boardMenuOpen}
+      <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
+      <div class="switcher-backdrop" onclick={closeBoardMenu}></div>
+      <div class="switcher-menu">
+        {#each boards as board (board.id)}
+          <div class="switcher-row" class:active={board.id === boardId}>
+            <span class="switcher-key">{board.key}</span>
+            <button class="switcher-name" onclick={() => switchBoard(board.id)}>{board.title}</button>
+            <button
+              class="icon-btn"
+              title="Edit board"
+              onclick={(e) => { e.stopPropagation(); boardEditingId = boardEditingId === board.id ? null : board.id; }}
+            >✎</button>
+            {#if boards.length > 1}
+              <button class="icon-btn danger" title="Delete board" onclick={(e) => { e.stopPropagation(); deleteBoard(board); }}>✕</button>
+            {/if}
+          </div>
+          {#if boardEditingId === board.id}
+            <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
+            <div class="switcher-edit" onclick={(e) => e.stopPropagation()}>
+              <label>Title
+                <input
+                  value={board.title}
+                  onblur={(e) => renameBoard(board, e.target.value)}
+                  onkeydown={(e) => e.key === 'Enter' && e.target.blur()}
+                />
+              </label>
+              <label>Key
+                <input
+                  class="key-input"
+                  value={board.key}
+                  maxlength="6"
+                  onblur={(e) => renameBoardKey(board, e.target.value)}
+                  onkeydown={(e) => e.key === 'Enter' && e.target.blur()}
+                />
+              </label>
+              <button class="switcher-add" onclick={() => (boardEditingId = null)}>Done</button>
+            </div>
+          {/if}
+        {/each}
+        {#if boardDraft !== null}
+          <div class="switcher-row switcher-add-form">
+            <input
+              placeholder="Board name…"
+              bind:value={boardDraft}
+              use:focus
+              onclick={(e) => e.stopPropagation()}
+              onkeydown={(e) => {
+                if (e.key === 'Enter') addBoard();
+                if (e.key === 'Escape') boardDraft = null;
+              }}
+              onblur={() => { if (boardDraft !== null) addBoard(); }}
+            />
+          </div>
+        {:else}
+          <button class="switcher-add" onclick={(e) => { e.stopPropagation(); boardDraft = ''; }}>+ New board</button>
+        {/if}
+      </div>
+    {/if}
   </div>
 
   <div class="spacer"></div>
@@ -243,6 +396,7 @@
             {/if}
             <span class="card-text">{card.text}</span>
             <div class="card-foot">
+              <span class="card-code">{card.code}</span>
               <span class="badge {prClass(card.priority)}">{card.priority}</span>
               {#if card.description}<span class="has-desc" title="Has description">≡</span>{/if}
             </div>
@@ -280,6 +434,7 @@
   if (e.key !== 'Escape') return;
   if (confirmDel) cancelDelete();
   else if (openCard) closeDetail();
+  else if (boardMenuOpen) closeBoardMenu();
 }} />
 
 {#if openCard}
@@ -288,7 +443,8 @@
     <div class="modal">
       <div class="modal-head">
         <span class="badge {prClass(openCard.priority)}">{openCard.priority}</span>
-        <span class="modal-id">#{openCard.id}</span>
+        <span class="modal-id">{openCard.code}</span>
+        <button class="icon-btn link-btn" title="Copy link to this card" onclick={copyCardLink}>{copiedLink ? 'Copied!' : 'Copy link'}</button>
         <div class="spacer"></div>
         <button class="icon-btn" title="Close" onclick={closeDetail}>✕</button>
       </div>
@@ -343,8 +499,27 @@
         onblur={(e) => saveField('description', e.target.value)}
       ></textarea>
 
+      {#if openCard.history?.length}
+        <div class="m-history-section">
+          <span class="m-label">Activity</span>
+          <ul class="m-history">
+            {#each openCard.history as h (h.id)}
+              <li>
+                <span class="history-move">
+                  {#if h.fromTitle}Moved from <b>{h.fromTitle}</b> to <b>{h.toTitle}</b>{:else}Moved to <b>{h.toTitle}</b>{/if}
+                </span>
+                <span class="history-time">{new Date(h.movedAt + 'Z').toLocaleString()}</span>
+              </li>
+            {/each}
+          </ul>
+        </div>
+      {/if}
+
       <div class="modal-foot">
         <span class="created">Created {new Date(openCard.createdAt + 'Z').toLocaleString()}</span>
+        {#if openCard.updatedAt && openCard.updatedAt !== openCard.createdAt}
+          <span class="created">· Updated {new Date(openCard.updatedAt + 'Z').toLocaleString()}</span>
+        {/if}
         <div class="spacer"></div>
         <button class="btn-danger" onclick={deleteFromModal}>Delete</button>
       </div>
@@ -451,6 +626,62 @@
   }
   .actions .sep { width: 1px; align-self: stretch; margin: 4px 2px; background: var(--border); }
 
+  /* board switcher */
+  .board-switcher { position: relative; }
+  .switcher-trigger {
+    display: inline-flex; align-items: center; gap: 8px; padding: 6px 10px;
+    border: 1px solid var(--border); border-radius: var(--r-full); background: var(--neutral);
+    color: var(--secondary); font-weight: 500; font-size: 14px;
+  }
+  .switcher-trigger:hover { background: var(--surface); border-color: var(--primary-60); }
+  .switcher-trigger .chev { width: 14px; height: 14px; color: var(--muted); flex-shrink: 0; }
+  @media (max-width: 640px) {
+    .switcher-trigger .stat { display: none; }
+  }
+
+  .switcher-backdrop { position: fixed; inset: 0; z-index: 29; background: transparent; }
+  .switcher-menu {
+    position: absolute; top: calc(100% + 8px); left: 0; z-index: 30; width: 260px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md);
+    box-shadow: var(--shadow-pop); padding: 6px; display: flex; flex-direction: column; gap: 2px;
+  }
+  .switcher-row {
+    display: flex; align-items: center; gap: 2px; border-radius: var(--r-sm);
+  }
+  .switcher-row.active .switcher-name { color: var(--primary); font-weight: 600; }
+  .switcher-name {
+    flex: 1; text-align: left; padding: 8px 8px; border-radius: var(--r-sm);
+    color: var(--secondary); font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .switcher-row:hover { background: var(--hover-tint); }
+  .switcher-key {
+    font-size: 11px; font-weight: 700; letter-spacing: .3px; color: var(--muted);
+    background: var(--hover-tint); border-radius: var(--r-sm); padding: 3px 6px; flex-shrink: 0;
+  }
+  .switcher-edit {
+    display: flex; flex-direction: column; gap: 8px; padding: 10px 8px 12px;
+    margin-bottom: 2px; border-bottom: 1px solid var(--border);
+  }
+  .switcher-edit label {
+    display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--muted);
+    font-weight: 600; text-transform: uppercase; letter-spacing: .3px;
+  }
+  .switcher-edit input {
+    font-family: inherit; font-size: 14px; color: var(--on-surface); background: var(--surface);
+    border: 1px solid var(--border); border-radius: var(--r-sm); padding: 7px 8px; outline: none;
+  }
+  .switcher-edit input:focus { border-color: var(--primary); }
+  .switcher-edit .key-input { width: 90px; text-transform: uppercase; letter-spacing: .5px; }
+  .switcher-edit .switcher-add { align-self: flex-end; padding: 6px 10px; }
+  .switcher-add {
+    text-align: left; padding: 8px 8px; border-radius: var(--r-sm); color: var(--muted); font-weight: 500; font-size: 14px;
+  }
+  .switcher-add:hover { background: var(--hover-tint); color: var(--secondary); }
+  .switcher-add-form input {
+    flex: 1; font-family: inherit; font-size: 14px; color: var(--on-surface); background: var(--surface);
+    border: 1px solid var(--primary); border-radius: var(--r-sm); padding: 7px 8px; outline: none;
+  }
+
   .density {
     display: inline-flex; align-items: center; justify-content: center;
     color: var(--secondary); background: transparent;
@@ -536,6 +767,7 @@
   .card:hover { border-color: var(--primary-60); box-shadow: var(--shadow-pop); }
   .card-text { white-space: pre-wrap; word-break: break-word; display: block; padding-right: 16px; color: var(--on-surface); }
   .card-foot { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+  .card-code { font-size: 11px; font-weight: 700; letter-spacing: .3px; color: var(--muted); }
   .has-desc { color: var(--muted); font-size: 14px; }
   .card .del { position: absolute; top: 4px; right: 4px; display: none; color: var(--muted); padding: 2px 6px; border-radius: var(--r-sm); font-size: 13px; }
   .card:hover .del { display: block; }
@@ -672,6 +904,8 @@
   }
   .modal-head { display: flex; align-items: center; gap: 10px; }
   .modal-id { color: var(--muted); font-size: 12px; font-weight: 600; }
+  .link-btn { font-size: 12px; font-weight: 500; color: var(--primary); padding: 4px 8px; }
+  .link-btn:hover { background: var(--hover-tint); }
   .m-title {
     font-size: 24px; font-weight: 500; line-height: 30px; background: transparent; color: var(--secondary);
     border: 1px solid transparent; border-radius: var(--r-sm); padding: 6px 8px; resize: none;
@@ -700,6 +934,19 @@
   .m-desc:focus { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(38,132,255,.3); }
   .modal-foot { display: flex; align-items: center; gap: 10px; margin-top: 4px; padding-top: 16px; border-top: 1px solid var(--border); }
   .created { font-size: 12px; color: var(--muted); }
+
+  .m-history-section { display: flex; flex-direction: column; gap: 6px; }
+  .m-history {
+    list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px;
+    max-height: 160px; overflow-y: auto;
+  }
+  .m-history li {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+    font-size: 13px; padding: 6px 8px; border-radius: var(--r-sm); background: var(--neutral);
+  }
+  .history-move { color: var(--on-surface); }
+  .history-move b { font-weight: 600; color: var(--secondary); }
+  .history-time { color: var(--muted); font-size: 12px; white-space: nowrap; }
 
   /* delete confirmation */
   .btn-secondary {
