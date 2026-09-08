@@ -3,6 +3,9 @@
   import { flip } from 'svelte/animate';
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
+  import ConfirmDialog from '$lib/ConfirmDialog.svelte';
+  import Toasts from '$lib/Toasts.svelte';
+  import { pushToast } from '$lib/toasts.svelte.js';
 
   let { data } = $props();
   let boards = $state(data.boards);
@@ -66,19 +69,28 @@
     const res = await patch(`/api/boards/${board.id}`, { key: clean });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
-      alert(body.message || 'Could not update board key');
+      // API messages are lowercase ("key already in use"); sentence-case for display
+      const msg = body.message || 'Could not update board key';
+      pushToast(msg.charAt(0).toUpperCase() + msg.slice(1));
       return;
     }
     board.key = clean;
   }
-  async function deleteBoard(board) {
+  function deleteBoard(board) {
     if (boards.length <= 1) return;
-    if (!confirm(`Delete board "${board.title}" and all its lists/cards?`)) return;
-    const wasCurrent = board.id === boardId;
-    const remaining = boards.filter((b) => b.id !== board.id);
-    boards = remaining;
-    await del(`/api/boards/${board.id}`);
-    if (wasCurrent) switchBoard(remaining[0].id);
+    ask({
+      title: 'Delete board?',
+      highlight: board.title,
+      message: 'and all of its lists and cards will be permanently removed. This can\u2019t be undone.',
+      confirmLabel: 'Delete board',
+      run: async () => {
+        const wasCurrent = board.id === boardId;
+        const remaining = boards.filter((b) => b.id !== board.id);
+        boards = remaining;
+        await del(`/api/boards/${board.id}`);
+        if (wasCurrent) switchBoard(remaining[0].id);
+      }
+    });
   }
 
   // card density: comfortable (default) | compact, persisted locally
@@ -131,8 +143,15 @@
   let open = $state(null); // { colId, card } reference into state
   const openCard = $derived(open?.card ?? null);
 
-  // delete confirmation
-  let confirmDel = $state(null); // { col, card }
+  // confirmation dialog — replaces window.confirm(). `run` fires on confirm.
+  let dialog = $state(null); // { title, highlight, message, confirmLabel, run }
+  function ask(spec) { dialog = spec; }
+  function cancelDialog() { dialog = null; }
+  function runDialog() {
+    const { run } = dialog;
+    dialog = null; // close first, so `run` can open a fresh dialog if it needs to
+    run();
+  }
 
   const totalCards = $derived(columns.reduce((n, c) => n + c.cards.length, 0));
 
@@ -148,9 +167,16 @@
     if (node.setSelectionRange) node.setSelectionRange(node.value.length, node.value.length);
   }
 
+  // svelte-dnd-action dispatches `finalize` to both the destination and the origin zone, so
+  // a cross-column drag calls this twice in the same tick. Coalesce into one request —
+  // the server is idempotent either way, but there's no reason to send the payload twice.
+  let orderTimer = null;
   function persistOrder() {
-    const payload = columns.map((c) => ({ id: c.id, cardIds: c.cards.map((card) => card.id) }));
-    post('/api/reorder', { columns: payload });
+    clearTimeout(orderTimer);
+    orderTimer = setTimeout(() => {
+      const payload = columns.map((c) => ({ id: c.id, cardIds: c.cards.map((card) => card.id) }));
+      post('/api/reorder', { columns: payload });
+    }, 0);
   }
 
   // ---- drag ----
@@ -169,9 +195,19 @@
     patch(`/api/columns/${col.id}`, { title: col.title });
   }
   function deleteColumn(col) {
-    if (col.cards.length && !confirm(`Delete "${col.title}" and its ${col.cards.length} cards?`)) return;
-    columns = columns.filter((c) => c.id !== col.id);
-    del(`/api/columns/${col.id}`);
+    const drop = () => {
+      columns = columns.filter((c) => c.id !== col.id);
+      del(`/api/columns/${col.id}`);
+    };
+    // An empty list is cheap to recreate, so only guard one that would take cards with it
+    if (!col.cards.length) return drop();
+    ask({
+      title: 'Delete list?',
+      highlight: col.title,
+      message: `and its ${col.cards.length} ${col.cards.length === 1 ? 'card' : 'cards'} will be permanently removed. This can\u2019t be undone.`,
+      confirmLabel: 'Delete list',
+      run: drop
+    });
   }
 
   // ---- cards ----
@@ -181,14 +217,18 @@
     if (text) col.cards.push(await post('/api/cards', { columnId: col.id, text }));
     draftText = '';
   }
-  function askDelete(col, card) { confirmDel = { col, card }; }
-  function cancelDelete() { confirmDel = null; }
-  function confirmDelete() {
-    const { col, card } = confirmDel;
-    col.cards = col.cards.filter((c) => c.id !== card.id);
-    del(`/api/cards/${card.id}`);
-    if (open?.card.id === card.id) open = null;
-    confirmDel = null;
+  function askDelete(col, card) {
+    ask({
+      title: 'Delete card?',
+      highlight: card.text,
+      message: 'will be permanently removed. This can\u2019t be undone.',
+      confirmLabel: 'Delete card',
+      run: () => {
+        col.cards = col.cards.filter((c) => c.id !== card.id);
+        del(`/api/cards/${card.id}`);
+        if (open?.card.id === card.id) open = null;
+      }
+    });
   }
 
   // ---- detail modal ----
@@ -442,7 +482,7 @@
 
 <svelte:window onkeydown={(e) => {
   if (e.key !== 'Escape') return;
-  if (confirmDel) cancelDelete();
+  if (dialog) cancelDialog();
   else if (openCard) closeDetail();
   else if (boardMenuOpen) closeBoardMenu();
 }} />
@@ -537,19 +577,18 @@
   </div>
 {/if}
 
-{#if confirmDel}
-  <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
-  <div class="overlay confirm-overlay" onclick={(e) => e.target === e.currentTarget && cancelDelete()}>
-    <div class="confirm">
-      <h2>Delete card?</h2>
-      <p>“<strong>{confirmDel.card.text}</strong>” will be permanently removed. This can't be undone.</p>
-      <div class="confirm-actions">
-        <button class="btn-secondary" onclick={cancelDelete}>Cancel</button>
-        <button class="btn-danger" onclick={confirmDelete}>Delete</button>
-      </div>
-    </div>
-  </div>
+{#if dialog}
+  <ConfirmDialog
+    title={dialog.title}
+    highlight={dialog.highlight}
+    message={dialog.message}
+    confirmLabel={dialog.confirmLabel}
+    onconfirm={runDialog}
+    oncancel={cancelDialog}
+  />
 {/if}
+
+<Toasts />
 
 <style>
   header {
@@ -910,21 +949,6 @@
   .history-move b { font-weight: 600; color: var(--secondary); }
   .history-time { color: var(--muted); font-size: 12px; white-space: nowrap; }
 
-  /* delete confirmation */
-  .btn-secondary {
-    background: var(--surface); color: var(--secondary); font-weight: 500;
-    border: 1px solid var(--border); padding: 10px 16px; border-radius: var(--r-sm);
-  }
-  .btn-secondary:hover { background: var(--neutral); border-color: #B3BAC5; }
-  .confirm-overlay { align-items: center; z-index: 60; }
-  .confirm {
-    background: var(--surface); border-radius: var(--r-lg); width: 100%; max-width: 420px;
-    padding: 24px; box-shadow: var(--shadow-pop); display: flex; flex-direction: column; gap: 8px;
-  }
-  .confirm h2 { margin: 0; font-size: 20px; font-weight: 500; color: var(--secondary); }
-  .confirm p { margin: 0; font-size: 14px; line-height: 20px; color: var(--on-surface); word-break: break-word; }
-  .confirm strong { font-weight: 600; }
-  .confirm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 
   /* signed-in account chip */
   .account { display: flex; align-items: center; gap: 8px; margin: 0; }

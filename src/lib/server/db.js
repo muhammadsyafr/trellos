@@ -177,16 +177,21 @@ export async function updateCard(d1, id, fields) {
   return getCard(d1, id);
 }
 
-// Move card to the end of another column (status change)
+// Move card to the end of another column (status change). Same guard as reorder(): both
+// statements test the card's current column at write time, so a repeated or racing request
+// changes nothing instead of logging the move twice.
 export async function moveCard(d1, id, columnId) {
-  const current = await d1.prepare('SELECT column_id FROM cards WHERE id = ?').bind(id).first();
-  if (!current) return getCard(d1, id);
-  const fromColumnId = current.column_id;
-  if (fromColumnId === columnId) return getCard(d1, id);
   const { p } = await d1.prepare('SELECT COALESCE(MAX(position) + 1, 0) AS p FROM cards WHERE column_id = ?').bind(columnId).first();
   await d1.batch([
-    d1.prepare(`UPDATE cards SET column_id = ?, position = ?, updated_at = datetime('now') WHERE id = ?`).bind(columnId, p, id),
-    d1.prepare('INSERT INTO card_history (card_id, from_column_id, to_column_id) VALUES (?, ?, ?)').bind(id, fromColumnId, columnId)
+    d1
+      .prepare(
+        `INSERT INTO card_history (card_id, from_column_id, to_column_id)
+         SELECT id, column_id, ? FROM cards WHERE id = ? AND column_id != ?`
+      )
+      .bind(columnId, id, columnId),
+    d1
+      .prepare(`UPDATE cards SET column_id = ?, position = ?, updated_at = datetime('now') WHERE id = ? AND column_id != ?`)
+      .bind(columnId, p, id, columnId)
   ]);
   return getCard(d1, id);
 }
@@ -196,34 +201,45 @@ export async function deleteCard(d1, id) {
 }
 
 // Persist full ordering after a drag. payload: [{ id, cardIds: [...] }, ...]
-// D1 has no imperative-transaction API (no read-then-branch inside one atomic unit like
-// better-sqlite3's db.transaction) — so reads happen first (sequential awaits), then every
-// write goes into one d1.batch() call, which D1 runs atomically.
+//
+// Every statement is written so that it reads the card's current column *at write time*,
+// inside the atomic d1.batch(). Reading the column in a separate round-trip first (as this
+// used to) meant two reorders racing each other both saw the pre-move column and each
+// logged the same move — svelte-dnd-action fires `finalize` on both the origin and the
+// destination zone, so one cross-column drag really does issue two of these.
 export async function reorder(d1, columns) {
-  const moves = [];
-  for (const col of columns) {
-    for (let i = 0; i < col.cardIds.length; i++) {
-      const cardId = col.cardIds[i];
-      const prev = await d1.prepare('SELECT column_id FROM cards WHERE id = ?').bind(cardId).first();
-      moves.push({ cardId, colId: col.id, pos: i, prevColumnId: prev?.column_id ?? null });
-    }
-  }
-
   const stmts = columns.map((col, colPos) =>
     d1.prepare('UPDATE columns SET position = ? WHERE id = ?').bind(colPos, col.id)
   );
-  for (const m of moves) {
-    if (m.prevColumnId !== null && m.prevColumnId !== m.colId) {
+
+  for (const col of columns) {
+    col.cardIds.forEach((cardId, pos) => {
+      // No-op once the card already sits in the target column, so a duplicate request
+      // can't append a second identical history row.
       stmts.push(
-        d1.prepare(`UPDATE cards SET column_id = ?, position = ?, updated_at = datetime('now') WHERE id = ?`).bind(m.colId, m.pos, m.cardId)
+        d1
+          .prepare(
+            `INSERT INTO card_history (card_id, from_column_id, to_column_id)
+             SELECT id, column_id, ? FROM cards WHERE id = ? AND column_id != ?`
+          )
+          .bind(col.id, cardId, col.id)
       );
+      // SQLite evaluates every SET expression against the pre-update row, so the CASE still
+      // sees the old column and updated_at only moves on a real column change.
       stmts.push(
-        d1.prepare('INSERT INTO card_history (card_id, from_column_id, to_column_id) VALUES (?, ?, ?)').bind(m.cardId, m.prevColumnId, m.colId)
+        d1
+          .prepare(
+            `UPDATE cards SET
+               position = ?,
+               updated_at = CASE WHEN column_id != ? THEN datetime('now') ELSE updated_at END,
+               column_id = ?
+             WHERE id = ?`
+          )
+          .bind(pos, col.id, col.id, cardId)
       );
-    } else {
-      stmts.push(d1.prepare('UPDATE cards SET position = ? WHERE id = ?').bind(m.pos, m.cardId));
-    }
+    });
   }
+
   await d1.batch(stmts);
 }
 
