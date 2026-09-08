@@ -26,6 +26,10 @@
     }
   });
   const currentBoard = $derived(boards.find((b) => b.id === boardId));
+  // First letters of the display name, capped at two, for the header avatar
+  const initials = $derived(
+    data.user.name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('') || '?'
+  );
 
   let boardMenuOpen = $state(false);
   let boardDraft = $state(null); // '' while the "+ New board" form is open, else null
@@ -362,6 +366,12 @@
       {/if}
     </button>
   </div>
+
+  <form class="account" method="POST" action="?/signout">
+    <span class="avatar" title={data.user.email} aria-hidden="true">{initials}</span>
+    <span class="account-name">{data.user.name}</span>
+    <button class="signout" type="submit">Sign out</button>
+  </form>
 </header>
 
 <div class="board" class:compact>
@@ -542,54 +552,6 @@
 {/if}
 
 <style>
-  /* Trello Calm Productivity — DESIGN.md tokens.
-     Charlie Display/Text are proprietary; using a clean system stack to stay offline/local. */
-  :global(:root) {
-    --primary: #0052CC;
-    --primary-60: #4C9AFF;
-    --primary-70: #2684FF;
-    --primary-80: #0065FF;
-    --secondary: #172B4D;
-    --tertiary: #6554C0;
-    --neutral: #F4F5F7;
-    --surface: #FFFFFF;
-    --on-surface: #091E42;
-    --error: #DE350B;
-    --border: #DFE1E6;
-    --muted: var(--muted);
-    --hover-tint: rgba(9, 30, 66, .06);
-    --overlay: rgba(9, 30, 66, .54);
-
-    --r-sm: 4px; --r-md: 8px; --r-lg: 12px; --r-full: 9999px;
-    --shadow-card: 0 1px 1px rgba(9,30,66,.10), 0 0 1px rgba(9,30,66,.12);
-    --shadow-pop: 0 8px 24px rgba(9,30,66,.18);
-    --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-  }
-  :global(html[data-theme='dark']) {
-    --primary: #4C9AFF;
-    --primary-60: #579DFF;
-    --primary-70: #85B8FF;
-    --primary-80: #85B8FF;
-    --secondary: #C7D1DB;
-    --tertiary: #9F8FEF;
-    --neutral: #1D2125;
-    --surface: #22272B;
-    --on-surface: #C7D1DB;
-    --error: #F87168;
-    --border: #38414A;
-    --muted: #8C9BAB;
-    --hover-tint: rgba(255, 255, 255, .08);
-    --overlay: rgba(0, 0, 0, .6);
-    --shadow-card: 0 1px 2px rgba(0,0,0,.4);
-    --shadow-pop: 0 8px 24px rgba(0,0,0,.5);
-  }
-  :global(body) {
-    margin: 0; font-family: var(--font);
-    background: var(--neutral); color: var(--on-surface);
-    height: 100vh; display: flex; flex-direction: column; overflow: hidden;
-    -webkit-font-smoothing: antialiased;
-  }
-
   header {
     position: sticky; top: 0; z-index: 20;
     display: flex; align-items: center; gap: 14px; padding: 10px 20px;
@@ -963,4 +925,25 @@
   .confirm p { margin: 0; font-size: 14px; line-height: 20px; color: var(--on-surface); word-break: break-word; }
   .confirm strong { font-weight: 600; }
   .confirm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+
+  /* signed-in account chip */
+  .account { display: flex; align-items: center; gap: 8px; margin: 0; }
+  .avatar {
+    display: grid; place-items: center; width: 28px; height: 28px; flex-shrink: 0;
+    font-size: 11px; font-weight: 700; letter-spacing: .3px; color: #fff;
+    border-radius: 50%; background: linear-gradient(135deg, var(--tertiary), var(--primary));
+  }
+  .account-name {
+    font-size: 13px; font-weight: 500; color: var(--secondary);
+    max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .signout {
+    padding: 6px 10px; font: inherit; font-size: 13px; cursor: pointer;
+    color: var(--muted); background: var(--neutral);
+    border: 1px solid var(--border); border-radius: var(--r-full);
+  }
+  .signout:hover { color: var(--error); border-color: color-mix(in srgb, var(--error) 45%, transparent); }
+  @media (max-width: 640px) {
+    .account-name { display: none; }
+  }
 </style>

@@ -1,18 +1,28 @@
 import { json, error } from '@sveltejs/kit';
-import { updateCard, moveCard, deleteCard, getCard } from '$lib/server/db.js';
+import { updateCard, moveCard, deleteCard, getCard, ownsCard, ownsColumn } from '$lib/server/db.js';
 
-export async function GET({ params, platform }) {
-  const card = await getCard(platform.env.DB, Number(params.id));
-  if (!card) throw error(404, 'not found');
-  return json(card);
+async function requireCard(d1, userId, id) {
+  if (!Number.isInteger(id) || !(await ownsCard(d1, userId, id))) throw error(404, 'not found');
+  return id;
 }
 
-export async function PATCH({ params, request, platform }) {
+export async function GET({ params, platform, locals }) {
   const d1 = platform.env.DB;
-  const id = Number(params.id);
+  const id = await requireCard(d1, locals.user.id, Number(params.id));
+  return json(await getCard(d1, id));
+}
+
+export async function PATCH({ params, request, platform, locals }) {
+  const d1 = platform.env.DB;
+  const id = await requireCard(d1, locals.user.id, Number(params.id));
   const body = await request.json();
   let card;
-  if (body.columnId != null) card = await moveCard(d1, id, Number(body.columnId));
+  if (body.columnId != null) {
+    // The destination list needs its own check — otherwise an owned card could be
+    // pushed into someone else's board
+    if (!(await ownsColumn(d1, locals.user.id, Number(body.columnId)))) throw error(404, 'list not found');
+    card = await moveCard(d1, id, Number(body.columnId));
+  }
   const { text, description, priority, tags } = body;
   if (text !== undefined || description !== undefined || priority !== undefined || tags !== undefined) {
     if (text !== undefined && !text.trim()) throw error(400, 'text required');
@@ -27,7 +37,9 @@ export async function PATCH({ params, request, platform }) {
   return json(card ?? (await getCard(d1, id)));
 }
 
-export async function DELETE({ params, platform }) {
-  await deleteCard(platform.env.DB, Number(params.id));
+export async function DELETE({ params, platform, locals }) {
+  const d1 = platform.env.DB;
+  const id = await requireCard(d1, locals.user.id, Number(params.id));
+  await deleteCard(d1, id);
   return json({ ok: true });
 }

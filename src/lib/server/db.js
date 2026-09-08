@@ -25,17 +25,28 @@ function deriveBoardKey(title, taken) {
   return key;
 }
 
-export async function getBoards(d1) {
-  const { results } = await d1.prepare('SELECT id, key, title FROM boards ORDER BY position').all();
+export async function getBoards(d1, userId) {
+  const { results } = await d1
+    .prepare('SELECT id, key, title FROM boards WHERE owner_id = ? ORDER BY position')
+    .bind(userId)
+    .all();
   return results;
 }
 
-export async function addBoard(d1, title) {
+// Board keys stay globally unique, not per-user: the /:code deep link (/MB-1) resolves a
+// key with no user in the URL, so two owners sharing a key would make those links ambiguous.
+export async function addBoard(d1, userId, title) {
   const { results: existing } = await d1.prepare('SELECT key FROM boards').all();
   const taken = new Set(existing.map((r) => r.key));
   const key = deriveBoardKey(title, taken);
-  const { p } = await d1.prepare('SELECT COALESCE(MAX(position) + 1, 0) AS p FROM boards').first();
-  const { meta } = await d1.prepare('INSERT INTO boards (key, title, position) VALUES (?, ?, ?)').bind(key, title, p).run();
+  const { p } = await d1
+    .prepare('SELECT COALESCE(MAX(position) + 1, 0) AS p FROM boards WHERE owner_id = ?')
+    .bind(userId)
+    .first();
+  const { meta } = await d1
+    .prepare('INSERT INTO boards (key, title, position, owner_id) VALUES (?, ?, ?, ?)')
+    .bind(key, title, p, userId)
+    .run();
   return { id: meta.last_row_id, key, title };
 }
 
@@ -88,7 +99,7 @@ export async function getCard(d1, id) {
 // The hyphen is a hard separator, not cosmetic: a board key that ends in a digit (e.g.
 // "Board 2" -> "B2") makes key+number ambiguous to re-split without one ("B21" could be
 // key "B" number 21, or key "B2" number 1) — the hyphen removes that ambiguity entirely.
-export async function getCardByCode(d1, rawCode) {
+export async function getCardByCode(d1, rawCode, userId) {
   const m = /^([A-Za-z0-9]+)-(\d+)$/.exec((rawCode || '').trim());
   if (!m) return null;
   const [, key, number] = m;
@@ -97,9 +108,9 @@ export async function getCardByCode(d1, rawCode) {
       `SELECT c.id AS id, b.id AS boardId FROM cards c
        JOIN columns col ON col.id = c.column_id
        JOIN boards b ON b.id = col.board_id
-       WHERE b.key = ? AND c.number = ?`
+       WHERE b.key = ? AND c.number = ? AND b.owner_id = ?`
     )
-    .bind(key.toUpperCase(), Number(number))
+    .bind(key.toUpperCase(), Number(number), userId)
     .first();
   return row || null;
 }
@@ -214,4 +225,69 @@ export async function reorder(d1, columns) {
     }
   }
   await d1.batch(stmts);
+}
+
+// ---------------------------------------------------------------------------
+// Users
+// ---------------------------------------------------------------------------
+
+export async function getUserByEmail(d1, email) {
+  return d1
+    .prepare('SELECT id, email, name, password_hash AS passwordHash FROM users WHERE email = ?')
+    .bind(email)
+    .first();
+}
+
+// Throws (D1_ERROR, UNIQUE constraint) if the email is already registered
+export async function createUser(d1, { email, name, passwordHash }) {
+  const { meta } = await d1
+    .prepare('INSERT INTO users (email, name, password_hash) VALUES (?, ?, ?)')
+    .bind(email, name, passwordHash)
+    .run();
+  return { id: meta.last_row_id, email, name };
+}
+
+// ---------------------------------------------------------------------------
+// Ownership guards
+//
+// Boards carry the owner; columns and cards inherit it through their parent. Every
+// mutating endpoint resolves ownership before touching a row, so a signed-in user
+// cannot reach another user's board by guessing an id.
+// ---------------------------------------------------------------------------
+
+export async function ownsBoard(d1, userId, boardId) {
+  const row = await d1.prepare('SELECT 1 AS ok FROM boards WHERE id = ? AND owner_id = ?').bind(boardId, userId).first();
+  return !!row;
+}
+
+export async function ownsColumn(d1, userId, columnId) {
+  const row = await d1
+    .prepare(
+      `SELECT 1 AS ok FROM columns c JOIN boards b ON b.id = c.board_id
+       WHERE c.id = ? AND b.owner_id = ?`
+    )
+    .bind(columnId, userId)
+    .first();
+  return !!row;
+}
+
+export async function ownsCard(d1, userId, cardId) {
+  const row = await d1
+    .prepare(
+      `SELECT 1 AS ok FROM cards ca
+       JOIN columns c ON c.id = ca.column_id
+       JOIN boards b ON b.id = c.board_id
+       WHERE ca.id = ? AND b.owner_id = ?`
+    )
+    .bind(cardId, userId)
+    .first();
+  return !!row;
+}
+
+// A fresh account with zero boards would render a header bound to an undefined board,
+// so every new user starts with one board and the three default lists.
+export async function seedWorkspace(d1, userId) {
+  const board = await addBoard(d1, userId, 'My Board');
+  for (const title of ['To Do', 'In Progress', 'Done']) await addColumn(d1, board.id, title);
+  return board;
 }

@@ -1,0 +1,47 @@
+/* Trello Calm Productivity — DESIGN.md tokens.
+   Charlie Display/Text are proprietary; using a clean system stack to stay offline/local. */
+:root {
+  --primary: #0052CC;
+  --primary-60: #4C9AFF;
+  --primary-70: #2684FF;
+  --primary-80: #0065FF;
+  --secondary: #172B4D;
+  --tertiary: #6554C0;
+  --neutral: #F4F5F7;
+  --surface: #FFFFFF;
+  --on-surface: #091E42;
+  --error: #DE350B;
+  --border: #DFE1E6;
+  --muted: #6B778C;
+  --hover-tint: rgba(9, 30, 66, .06);
+  --overlay: rgba(9, 30, 66, .54);
+
+  --r-sm: 4px; --r-md: 8px; --r-lg: 12px; --r-full: 9999px;
+  --shadow-card: 0 1px 1px rgba(9,30,66,.10), 0 0 1px rgba(9,30,66,.12);
+  --shadow-pop: 0 8px 24px rgba(9,30,66,.18);
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+}
+html[data-theme='dark'] {
+  --primary: #4C9AFF;
+  --primary-60: #579DFF;
+  --primary-70: #85B8FF;
+  --primary-80: #85B8FF;
+  --secondary: #C7D1DB;
+  --tertiary: #9F8FEF;
+  --neutral: #1D2125;
+  --surface: #22272B;
+  --on-surface: #C7D1DB;
+  --error: #F87168;
+  --border: #38414A;
+  --muted: #8C9BAB;
+  --hover-tint: rgba(255, 255, 255, .08);
+  --overlay: rgba(0, 0, 0, .6);
+  --shadow-card: 0 1px 2px rgba(0,0,0,.4);
+  --shadow-pop: 0 8px 24px rgba(0,0,0,.5);
+}
+body {
+  margin: 0; font-family: var(--font);
+  background: var(--neutral); color: var(--on-surface);
+  height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}

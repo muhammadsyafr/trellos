@@ -2,7 +2,9 @@
 declare global {
 	namespace App {
 		// interface Error {}
-		// interface Locals {}
+		interface Locals {
+			user: { id: number; email: string; name: string } | null;
+		}
 		// interface PageData {}
 		interface Platform {
 			env: {
