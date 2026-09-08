@@ -1,0 +1,16 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "trellos",
+  "compatibility_date": "2026-07-05",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "pages_build_output_dir": ".svelte-kit/cloudflare",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "trellos-db",
+      "database_id": "8d0d56b8-34ca-4e54-bcbb-e90149b223a2"
+    }
+  ]
+}

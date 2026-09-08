@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "npm run build && wrangler dev",
     "start": "node build",
-    "deploy": "npm run build && wrangler deploy"
+    "deploy": "npm run build && wrangler deploy",
+    "deploy:pages": "bash scripts/deploy-pages.sh"
   },
   "devDependencies": {
     "@sveltejs/adapter-cloudflare": "^7.2.8",
